@@ -1,0 +1,2 @@
+name,sku,brand,short_description,long_description,dimensions,images,category,subcategory,specification,attributes,price,quantity,batchno,expiry_date
+Paracetamol 500mg,PRD001,MediCare,Pain reliever,Effective for mild to moderate pain and fever,10x10 tablets,image1.jpg|image2.jpg,Medicines,Pain Relief,Box of 100 tablets,"{""color"":""white"",""type"":""tablet""}",49.99,100,BCH1234,2026-03-15
