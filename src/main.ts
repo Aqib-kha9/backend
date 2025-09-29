@@ -13,6 +13,8 @@ async function bootstrap() {
       'http://localhost:3001',
       'https://adminretialers.vercel.app',
       'https://superfrontend-ruddy.vercel.app',
+      'https://superfrontend-six.vercel.app',
+      'https://admin-retialer.vercel.app',
             ],  
     // Next.js port
   });
