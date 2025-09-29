@@ -12,7 +12,7 @@ import { SubscriptionTasksService } from './subscriptiontasks/subscription-tasks
 
 
 @Module({
-  imports: [MongooseModule.forRoot('mongodb://localhost:27017/inventory'),
+  imports: [MongooseModule.forRoot('mongodb+srv://aqibkha9x:DkyucQ2Ccjs4EwHD@cluster0.skvdstf.mongodb.net/inventory'),
     MongooseModule.forFeature([{ name: 'Customer', schema: (Customer as any).schema }]),
     UserModule,ProductModule,
     SecurityModule,AuthModule,
