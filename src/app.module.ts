@@ -9,14 +9,21 @@ import { InvoiceController } from './invoice/invoice.controller';
 import Customer from './invoice/schemas/customer.schema';
 import { ScheduleModule } from '@nestjs/schedule';
 import { SubscriptionTasksService } from './subscriptiontasks/subscription-tasks.service';
-
+import { AgentModule } from './agent/agent.module'; 
 
 @Module({
-  imports: [MongooseModule.forRoot('mongodb+srv://aqibkha9x:DkyucQ2Ccjs4EwHD@cluster0.skvdstf.mongodb.net/inventory'),
+  imports: [
+    MongooseModule.forRoot(
+      'mongodb+srv://aqibkha9x:DkyucQ2Ccjs4EwHD@cluster0.skvdstf.mongodb.net/inventory'
+    ),
     MongooseModule.forFeature([{ name: 'Customer', schema: (Customer as any).schema }]),
-    UserModule,ProductModule,
-    SecurityModule,AuthModule,
-    ScheduleModule.forRoot()],
+    UserModule,
+    ProductModule,
+    SecurityModule,
+    AuthModule,
+    AgentModule,
+    ScheduleModule.forRoot(),
+  ],
   controllers: [InvoiceController],
   providers: [AppService, SubscriptionTasksService],
 })

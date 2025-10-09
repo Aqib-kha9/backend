@@ -1,9 +1,15 @@
-import { Controller, Post, Body, UseGuards, Request, Get } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  Request,
+  Get,
+} from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { RegisterDto } from './dto/register.dto';
 import { RegisteraccessDto } from './dto/registeraccess.dto';
-
 
 @Controller('auth')
 export class AuthController {
@@ -26,12 +32,18 @@ export class AuthController {
 
   @Post('loginAdmin')
   async loginAdmin(@Body() body: any) {
-    const user = await this.authService.validateAdmin(body.email, body.password);
+    const user = await this.authService.validateAdmin(
+      body.email,
+      body.password,
+    );
     return this.authService.login(user);
   }
   @Post('loginRetailer')
   async loginRetailer(@Body() body: any) {
-    const user = await this.authService.validateRetailer(body.email, body.password);
+    const user = await this.authService.validateRetailer(
+      body.email,
+      body.password,
+    );
     return this.authService.login(user);
   }
   @Post('loginSA')
@@ -44,5 +56,19 @@ export class AuthController {
   @Get('profile')
   getProfile(@Request() req) {
     return req.user;
+  }
+
+  // AuthController.ts
+  @UseGuards(JwtAuthGuard)
+  @Get('validate')
+  validateToken(@Request() req) {
+    return {
+      valid: true,
+      user: {
+        userid: req.user.userid,
+        email: req.user.email,
+        role: req.user.role,
+      },
+    };
   }
 }
