@@ -101,4 +101,21 @@ export class OfferService {
   async getOffersForAdmin(partyId: string): Promise<OfferDocument[]> {
     return this.offerModel.find({ party_id: partyId }).exec();
   }
+
+  // In your OfferService class
+async deleteOffersByProductId(productId: string): Promise<{ message: string; deletedCount: number }> {
+  try {
+    const result = await this.offerModel.deleteMany({ 
+      product_id: productId 
+    });
+    
+    return {
+      message: `Deleted ${result.deletedCount} offers for product ${productId}`,
+      deletedCount: result.deletedCount
+    };
+  } catch (error) {
+    console.error(`Error deleting offers for product ${productId}:`, error);
+    throw new Error(`Failed to delete offers for product ${productId}`);
+  }
+}
 }

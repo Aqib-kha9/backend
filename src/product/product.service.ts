@@ -275,4 +275,37 @@ export class ProductService {
     }
     return { product: updatedProduct, inventory: updatedInventory };
   }
+
+  async getProductById(productId: string): Promise<Product> {
+  const product = await this.productModel.findOne({ product_id: productId });
+  if (!product) {
+    throw new NotFoundException('Product not found');
+  }
+  return product;
+ }
+async deleteProduct(productId: string): Promise<any> {
+  // Delete the product
+  const deletedProduct = await this.productModel.findOneAndDelete({ 
+    product_id: productId 
+  });
+
+  if (!deletedProduct) {
+    throw new NotFoundException(`Product with ID ${productId} not found`);
+  }
+
+  // Also delete associated inventory
+  await this.inventoryModel.deleteMany({ product_id: productId });
+
+  // Also delete associated offers if they exist
+  try {
+    await this.offerService.deleteOffersByProductId?.(productId);
+  } catch (error) {
+    console.warn('Could not delete associated offers:', error);
+  }
+
+  return {
+    message: 'Product deleted successfully',
+    product_id: productId
+  };
+}
 }

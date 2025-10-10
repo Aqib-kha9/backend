@@ -13,7 +13,6 @@ import { Product } from 'src/product/schemas/product.schema';
 import { UserService } from './user.service';
 import axios, { isAxiosError } from 'axios';
 import { parseStringPromise } from 'xml2js';
-import { Wallpaper } from './schemas/wallpaper.schema';
 import { Inventory } from 'src/product/schemas/inventory.schema';
 import { TallyCompany } from './schemas/user.schema';
 
@@ -62,7 +61,6 @@ export class AdminService {
     private userSecurityGroupModel: Model<UserSecurityGroup>,
     @InjectModel(User.name) private userModel: Model<User>,
     @InjectModel(Product.name) private productModel: Model<Product>,
-    @InjectModel(Wallpaper.name) private wallpaperModel: Model<Wallpaper>,
     @InjectModel(Inventory.name) private inventoryModel: Model<Inventory>,
     private readonly UserService: UserService,
   ) {}
@@ -517,25 +515,6 @@ async syncTallyProducts(
     });
 
     return { allretailer, products, activereatailerCount };
-  }
-
-  async saveWallpaperOrBanner(
-    userid: string,
-    type: 'wallpaper' | 'banner',
-    device: 'desktop' | 'mobile',
-    url: string,
-  ) {
-    let doc = await this.wallpaperModel.findOne({ userid });
-    if (!doc) {
-      doc = new this.wallpaperModel({ userid, images: [] });
-    }
-    // Remove any existing entry for this type+device
-    doc.images = doc.images.filter(
-      (img) => !(img.type === type && img.device === device),
-    );
-    doc.images.push({ type, device, url });
-    await doc.save();
-    return { success: true, images: doc.images };
   }
 
   async updateRetailerSubscription(

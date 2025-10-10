@@ -15,7 +15,6 @@ import { AdminService } from 'src/user/admin.service';
 import { SuperAdminService } from 'src/user/sa.service';
 import { Product, ProductSchema } from 'src/product/schemas/product.schema';
 import { Party, PartySchema } from '../user/schemas/party.schema';
-import { Wallpaper, WallpaperSchema } from '../user/schemas/wallpaper.schema';
 import { Inventory, InventorySchema } from 'src/product/schemas/inventory.schema';
 
 
@@ -31,7 +30,6 @@ import { Inventory, InventorySchema } from 'src/product/schemas/inventory.schema
       { name: SecurityGroup.name, schema: SecurityGroupSchema },
       { name: Product.name, schema: ProductSchema },
       {name:Party.name, schema: PartySchema},
-      { name: Wallpaper.name, schema: WallpaperSchema },
       {name:Inventory.name, schema:InventorySchema}
     ]),
   ],

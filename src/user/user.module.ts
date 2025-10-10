@@ -13,7 +13,6 @@ import {ProductModule} from '../product/product.module'
 import { Party, PartySchema } from './schemas/party.schema';
 import { Category, CategorySchema } from './schemas/category.schema';
 import { CategoryService } from './category.service';
-import { Wallpaper, WallpaperSchema} from './schemas/wallpaper.schema';
 import {Retailerfield,RetailerfieldSchema} from './schemas/retailerfields.schema'
 import { RetailerController } from './retailer.controller';
 import { Inventory, InventorySchema } from 'src/product/schemas/inventory.schema';
@@ -27,7 +26,6 @@ import { Inventory, InventorySchema } from 'src/product/schemas/inventory.schema
       { name: Product.name, schema: ProductSchema },
       {name:Party.name, schema: PartySchema},
       { name: Category.name, schema: CategorySchema },
-      { name: Wallpaper.name, schema: WallpaperSchema },
       {name:Retailerfield.name, schema:RetailerfieldSchema },
       {name:Inventory.name, schema:InventorySchema}
 

@@ -10,7 +10,6 @@ import { CategoryService } from './category.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import * as path from 'path';
-import { Wallpaper } from './schemas/wallpaper.schema';
 import * as fs from 'fs';
 import { Retailerfield } from './schemas/retailerfields.schema';
 import { Party } from "./schemas/party.schema";
@@ -21,7 +20,6 @@ export class RetailerController {
     constructor(
         @InjectModel(User.name) private userModel: Model<User>,
         @InjectModel(Party.name) private partyModel: Model<Party>,
-        @InjectModel(Wallpaper.name) private wallpaperModel: Model<Wallpaper>,
         private readonly categoryService: CategoryService,
     ) {}
 
@@ -79,34 +77,5 @@ async getCustomCategories(@Req() req) {
 async deleteCustomCategories(@Req() req, @Body() body) {
   return this.categoryService.deleteUserCategories(req.user.userid, body.name);
 }
-
-
-
-@Get('wallpaper')
-@UseGuards(JwtAuthGuard)
-async getWallpaper(@Req() req, @Query('device') device: 'desktop' | 'mobile') {
-const user = await this.userModel.findOne({ userid: req.user.userid });
-if (!user) {
-    throw new NotFoundException('User not found');
-}
-const doc = await this.wallpaperModel.findOne({ userid: user.adminid });
-if (!doc) return { url: null };
-const found = doc.images.find(img => img.type === 'wallpaper' && img.device === device);
-return { url: found ? found.url : null };
-}
-
-@Get('banner')
-@UseGuards(JwtAuthGuard)
-async getBanner(@Req() req, @Query('device') device: 'desktop' | 'mobile') {
-const user = await this.userModel.findOne({ userid: req.user.userid });
-if (!user) {
-    throw new NotFoundException('User not found');
-}
-const doc = await this.wallpaperModel.findOne({ userid: user.adminid });
-if (!doc) return { url: null };
-const found = doc.images.find(img => img.type === 'banner' && img.device === device);
-return { url: found ? found.url : null };
-}
-
 
 }

@@ -10,7 +10,9 @@ import Customer from './invoice/schemas/customer.schema';
 import { ScheduleModule } from '@nestjs/schedule';
 import { SubscriptionTasksService } from './subscriptiontasks/subscription-tasks.service';
 import { AgentModule } from './agent/agent.module'; 
-
+import { BannerModule } from './banner/banner.module';
+import { CloudinaryModule } from './cloudinary/cloudinary.module';
+import {WallpaperModule} from './wallpaper/wallpaper.module'
 @Module({
   imports: [
     MongooseModule.forRoot(
@@ -21,7 +23,10 @@ import { AgentModule } from './agent/agent.module';
     ProductModule,
     SecurityModule,
     AuthModule,
+    BannerModule,
     AgentModule,
+    CloudinaryModule,
+    WallpaperModule,
     ScheduleModule.forRoot(),
   ],
   controllers: [InvoiceController],

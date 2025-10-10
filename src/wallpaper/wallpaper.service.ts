@@ -1,0 +1,192 @@
+import { Injectable, ForbiddenException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Wallpaper } from './schemas/wallpaper.schema';
+import { User } from '../user/schemas/user.schema';
+import { CreateWallpaperDto } from './dto/create-wallpaper.dto';
+import { CloudinaryService } from '../cloudinary/cloudinary.service';
+
+@Injectable()
+export class WallpaperService {
+  constructor(
+    @InjectModel(Wallpaper.name) private wallpaperModel: Model<Wallpaper>,
+    @InjectModel(User.name) private userModel: Model<User>,
+    private readonly cloudinaryService: CloudinaryService,
+  ) {}
+
+  // Helper function to determine role from userid
+  private determineRole(userid: string): string {
+    if (userid.startsWith('u')) {
+      return 'superadmin';
+    } else if (userid.startsWith('a')) {
+      return 'admin';
+    } else if (userid.startsWith('r')) {
+      return 'retailer';
+    } else {
+      return 'admin'; // default fallback
+    }
+  }
+
+  async create(dto: CreateWallpaperDto, user: any) {
+    console.log('User object in create:', user);
+    
+    const ownerId = user.userid;
+    if (!ownerId) {
+      throw new Error('User ID is required');
+    }
+
+    const ownerRole = this.determineRole(ownerId);
+
+    console.log('Creating wallpaper with:', { ownerId, ownerRole });
+
+    const wallpaper = new this.wallpaperModel({
+      ...dto,
+      ownerId: ownerId,
+      ownerRole: ownerRole,
+    });
+    
+    return await wallpaper.save();
+  }
+
+  async findForUser(user: any, device: string) {
+    const userId = user.userid;
+    if (!userId) {
+      return { url: null };
+    }
+
+    const userRole = this.determineRole(userId);
+    let wallpaper: Wallpaper | null = null;
+
+    console.log(`Finding wallpaper for user: ${userId}, role: ${userRole}, device: ${device}`);
+
+    if (userRole === 'superadmin') {
+      // Superadmin sees their own wallpapers
+      wallpaper = await this.wallpaperModel.findOne({ ownerId: userId, device }).sort({ createdAt: -1 });
+    } 
+    else if (userRole === 'admin') {
+      // Admin sees their own wallpapers first, then superadmin wallpapers as fallback
+      wallpaper = await this.wallpaperModel.findOne({ ownerId: userId, device }).sort({ createdAt: -1 });
+      if (!wallpaper) {
+        wallpaper = await this.wallpaperModel.findOne({ ownerRole: 'superadmin', device }).sort({ createdAt: -1 });
+      }
+    } 
+    else if (userRole === 'retailer') {
+      // For retailers, we need to get their adminid from the database
+      let adminId = user.adminid;
+      
+      // If adminid is not in the token, fetch it from the database
+      if (!adminId) {
+        console.log(`Admin ID not found in token for retailer ${userId}, fetching from database...`);
+        const retailerUser = await this.userModel.findOne({ userid: userId }).select('adminid');
+        if (retailerUser && retailerUser.adminid) {
+          adminId = retailerUser.adminid;
+          console.log(`Found admin ID from database: ${adminId}`);
+        } else {
+          console.log(`Admin ID not found in database for retailer ${userId}`);
+        }
+      } else {
+        console.log(`Retailer ${userId} belongs to admin: ${adminId}`);
+      }
+      
+      // First priority: Admin's wallpapers
+      if (adminId) {
+        wallpaper = await this.wallpaperModel.findOne({ ownerId: adminId, device }).sort({ createdAt: -1 });
+        console.log(`Admin wallpaper found:`, wallpaper ? 'Yes' : 'No');
+      }
+      
+      // Second priority: Retailer's own wallpapers (if they uploaded any)
+      if (!wallpaper) {
+        wallpaper = await this.wallpaperModel.findOne({ ownerId: userId, device }).sort({ createdAt: -1 });
+        console.log(`Retailer's own wallpaper found:`, wallpaper ? 'Yes' : 'No');
+      }
+      
+      // Final fallback: Superadmin wallpapers
+      if (!wallpaper) {
+        wallpaper = await this.wallpaperModel.findOne({ ownerRole: 'superadmin', device }).sort({ createdAt: -1 });
+        console.log(`Superadmin wallpaper found:`, wallpaper ? 'Yes' : 'No');
+      }
+    }
+
+    console.log(`Final wallpaper result:`, wallpaper);
+    return wallpaper || { url: null };
+  }
+
+  async findAllForUser(user: any) {
+    const userId = user.userid;
+    if (!userId) {
+      return [];
+    }
+
+    const userRole = this.determineRole(userId);
+    let query = {};
+    
+    console.log(`Finding all wallpapers for user: ${userId}, role: ${userRole}`);
+    
+    if (userRole === 'superadmin') {
+      query = { ownerId: userId };
+    } else if (userRole === 'admin') {
+      query = { 
+        $or: [
+          { ownerId: userId },
+          { ownerRole: 'superadmin' }
+        ]
+      };
+    } else if (userRole === 'retailer') {
+      // For retailers, we need to get their adminid from the database
+      let adminId = user.adminid;
+      
+      // If adminid is not in the token, fetch it from the database
+      if (!adminId) {
+        console.log(`Admin ID not found in token for retailer ${userId}, fetching from database...`);
+        const retailerUser = await this.userModel.findOne({ userid: userId }).select('adminid');
+        if (retailerUser && retailerUser.adminid) {
+          adminId = retailerUser.adminid;
+          console.log(`Found admin ID from database: ${adminId}`);
+        } else {
+          console.log(`Admin ID not found in database for retailer ${userId}`);
+        }
+      } else {
+        console.log(`Retailer ${userId} belongs to admin: ${adminId}`);
+      }
+
+      query = { 
+        $or: [
+          { ownerId: adminId },  // Admin's wallpapers (highest priority)
+          { ownerId: userId },   // Retailer's own wallpapers
+          { ownerRole: 'superadmin' } // Superadmin wallpapers
+        ]
+      };
+    }
+
+    console.log(`Query for wallpapers:`, query);
+    return await this.wallpaperModel.find(query).sort({ createdAt: -1 });
+  }
+
+  async deleteWallpaper(id: string, user: any) {
+    const userId = user.userid;
+    if (!userId) {
+      throw new Error('User ID is required');
+    }
+
+    const userRole = this.determineRole(userId);
+    const wallpaper = await this.wallpaperModel.findById(id);
+    
+    if (!wallpaper) {
+      throw new Error('Wallpaper not found');
+    }
+
+    // Check ownership - superadmin can delete any, others can only delete their own
+    if (userRole !== 'superadmin' && wallpaper.ownerId !== userId) {
+      throw new ForbiddenException('You can only delete your own wallpapers');
+    }
+
+    // Delete from Cloudinary if public ID exists
+    if (wallpaper.cloudinaryPublicId) {
+      await this.cloudinaryService.deleteImage(wallpaper.cloudinaryPublicId);
+    }
+
+    // Delete from database
+    await this.wallpaperModel.findByIdAndDelete(id);
+    return { success: true };
+  }
+}

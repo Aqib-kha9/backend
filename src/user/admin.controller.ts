@@ -9,7 +9,6 @@ import { CategoryService } from './category.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import * as path from 'path';
-import { Wallpaper } from './schemas/wallpaper.schema';
 import * as fs from 'fs';
 import { Retailerfield } from './schemas/retailerfields.schema';
 import { Party } from "./schemas/party.schema";
@@ -52,7 +51,6 @@ export class AdminController {
         @InjectModel(Party.name) private partyModel: Model<Party>,
         private readonly adminService: AdminService,
         private readonly categoryService: CategoryService,
-        @InjectModel(Wallpaper.name) private wallpaperModel: Model<Wallpaper>,
         @InjectModel(Retailerfield.name) private retailerfieldModel: Model<Retailerfield>,
     ) {}
 
@@ -181,93 +179,7 @@ async syncTallyProducts(
     return this.categoryService.deleteUserCategories(req.user.userid, body.name);
   }
 
-  @Post('upload-wallpaper-banner')
-  @UseGuards(JwtAuthGuard)
-  @UseInterceptors(FileInterceptor('file', { storage }))
-  async uploadWallpaperBanner(
-    @Req() req,
-    @UploadedFile() file: Express.Multer.File,
-    @Body('url') url: string,
-    @Body('type') type: 'wallpaper' | 'banner',
-    @Body('device') device: 'desktop' | 'mobile'
-  ) {
-    const userid = req.user.userid;
-    let imageUrl = '';
-    if (file) {
-      imageUrl = `/uploads/${type}s/${device}/${file.filename}`;
-    } else if (url) {
-      imageUrl = url;
-    } else {
-      throw new BadRequestException('No file or URL provided');
-    }
-
-    // Check if an entry for this type and device already exists
-    const doc = await this.wallpaperModel.findOne({ userid });
-    if (doc && doc.images.some(img => img.type === type && img.device === device)) {
-      throw new BadRequestException('A wallpaper or banner for this type and device already exists. Please delete the previous image or URL first before uploading a new one.');
-    }
-
-    return this.adminService.saveWallpaperOrBanner(userid, type, device, imageUrl);
-  }
-
-  @Get('wallpaper')
-    @UseGuards(JwtAuthGuard)
-    async getWallpaper(@Req() req, @Query('device') device: 'desktop' | 'mobile') {
-    const doc = await this.wallpaperModel.findOne({ userid: req.user.userid });
-    if (!doc) return { url: null };
-    const found = doc.images.find(img => img.type === 'wallpaper' && img.device === device);
-    return { url: found ? found.url : null };
-    }
-
-    @Get('banner')
-    @UseGuards(JwtAuthGuard)
-    async getBanner(@Req() req, @Query('device') device: 'desktop' | 'mobile') {
-    const doc = await this.wallpaperModel.findOne({ userid: req.user.userid });
-    if (!doc) return { url: null };
-    const found = doc.images.find(img => img.type === 'banner' && img.device === device);
-    return { url: found ? found.url : null };
-    }
-  
-
-  @Get('wallpaper-banner/all')
-  @UseGuards(JwtAuthGuard)
-  async getAllWallpapersBanners(@Req() req) {
-    const userid = req.user.userid;
-    const doc = await this.wallpaperModel.findOne({ userid });
-    if (!doc || !doc.images) return [];
-    // Return all images with their _id, type, device, url
-    return doc.images.map(img => ({
-      _id: img._id?.toString?.() || img._id, // ensure string
-      type: img.type,
-      device: img.device,
-      url: img.url,
-    }));
-  }
-
-  @Delete('wallpaper-banner/:id')
-  @UseGuards(JwtAuthGuard)
-  async deleteWallpaperBanner(@Req() req, @Param('id') id: string) {
-    const userid = req.user.userid;
-    const doc = await this.wallpaperModel.findOne({ userid });
-    if (!doc || !doc.images) throw new NotFoundException('No wallpapers/banners found');
-    const idx = doc.images.findIndex(img => img._id?.toString?.() === id);
-    if (idx === -1) throw new NotFoundException('Wallpaper/Banner not found');
-    const img = doc.images[idx];
-
-    // Delete file from disk if it's a local upload
-    if (img.url && img.url.startsWith('/uploads/')) {
-      const path = require('path');
-      const fs = require('fs');
-      const filePath = path.join(__dirname, '../../..', img.url);
-      fs.unlink(filePath, err => {
-        // Ignore error if file doesn't exist
-      });
-    }
-
-    doc.images.splice(idx, 1);
-    await doc.save();
-    return { success: true };
-  }
+ 
 
   @Post('retailer-fields')
   @UseGuards(JwtAuthGuard)

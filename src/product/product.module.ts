@@ -12,7 +12,7 @@ import { Offer, OfferSchema } from './schemas/offer.schema';
 import { OfferService } from './offer.service';
 import { OfferController } from './offer.controller';
 import { Retailerfield, RetailerfieldSchema } from '../user/schemas/retailerfields.schema';
-
+import { CloudinaryModule } from 'src/cloudinary/cloudinary.module';
 
 
 
@@ -24,7 +24,8 @@ import { Retailerfield, RetailerfieldSchema } from '../user/schemas/retailerfiel
     { name: Product.name, schema: ProductSchema },
     { name: Offer.name, schema: OfferSchema },
     { name: Retailerfield.name, schema: RetailerfieldSchema },
-     ]),
+    
+     ]),CloudinaryModule,
   forwardRef(() =>UserModule)],
   providers: [ProductService,OfferService, UserService],
   controllers: [ProductController, OfferController],
