@@ -68,6 +68,15 @@ interface ProductDoc {
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
 
+  // Normalization helper
+  private _normalizeString(str: string): string {
+    return (str || '')
+      .replace(/\u00A0/g, ' ') // Replace non-breaking space with normal space
+      .replace(/\s+/g, ' ')    // Collapse multiple spaces
+      .trim()
+      .toLowerCase();
+  }
+
   constructor(
     @InjectModel(User.name) private readonly userModel: Model<User>,
     @InjectModel(Party.name) private readonly partyModel: Model<Party>,
@@ -377,15 +386,20 @@ export class AgentService {
       throw new BadRequestException('Invalid or inactive requestId');
     }
   
-    // Company name case-insensitive match
-    if (
-      (task.payload?.companyName || '').toLowerCase() !==
-      dto.companyName.toLowerCase()
-    ) {
+    // Company name case-insensitive match with aggressive normalization
+    const expectedRaw = task.payload?.companyName || '';
+    const actualRaw = dto.companyName;
+
+    const expectedNormalized = this._normalizeString(expectedRaw);
+    const actualNormalized = this._normalizeString(actualRaw);
+
+    if (expectedNormalized !== actualNormalized) {
+      const errorMsg = `Company name mismatch. Expected "${expectedRaw}", Got "${actualRaw}" (Normalized: "${expectedNormalized}" vs "${actualNormalized}")`;
       task.status = 'FAILED';
-      task.error = 'Company mismatch';
+      task.error = errorMsg;
       await task.save();
-      throw new BadRequestException('Company name mismatch');
+      this.logger.error(`ReceiveTally Failed: ${errorMsg}`);
+      throw new BadRequestException(errorMsg);
     }
   
     // ✅ Ab userid directly agent se mil jayega
