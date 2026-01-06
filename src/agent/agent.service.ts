@@ -139,15 +139,22 @@ export class AgentService {
     const { party_id } = context;
     const item = tallyItem;
 
+    // 1. GUID & Name
     const guid = this._extractTallyValue(item, ['GUID', '$GUID', 'GUID._']);
-    const name = this._extractTallyValue(item, [
+    const nameRaw = this._extractTallyValue(item, [
       'NAME',
       '$NAME',
       'LANGUAGENAME.LIST',
     ]);
-    const sku = guid || name;
-
-    if (!sku) return null; // fail-safe for missing SKU
+    
+    // Normalize Name
+    const name = nameRaw ? this._cleanTallyString(nameRaw) : undefined;
+    
+    // 2. SKU Generation: Prefer Name -> GUID
+    // The user specifically wants readable SKUs ("Iphone" -> "Iphone", not "852f...")
+    let sku = name; 
+    if (!sku && guid) sku = guid; // Fallback if name is somehow missing
+    if (!sku) return null; // fail-safe
 
     const baseUnit = this._extractTallyValue(item, [
       'BASEUNITS',
@@ -169,25 +176,46 @@ export class AgentService {
 
     const priceRaw = this._extractTallyValue(item, [
       'STANDARDCOST',
-      'OPENINGVALUE',
+      'OPENINGVALUE', // Fallback to opening value if std cost missing
     ]);
     const price = priceRaw ? parseFloat(priceRaw.replace(/[^0-9.-]+/g, '')) : 0;
 
-    const parent = this._extractTallyValue(item, ['PARENT', 'PARENT._']);
+    // 3. Category & Brand from PARENT
+    const parentRaw = this._extractTallyValue(item, ['PARENT', 'PARENT._']);
+    const parent = parentRaw ? this._cleanTallyString(parentRaw) : 'Uncategorized';
+    
+    // Tally doesn't have "Brand", so we use Parent (Stock Group) as Brand too, 
+    // or "Generic" if it's top-level.
+    const brand = parent !== 'Uncategorized' ? parent : 'Generic';
+
     const hsn = this._extractTallyValue(item, ['HSN']);
     const gst = this._extractTallyValue(item, ['GSTAPPLICABLE']);
+    const description = this._extractTallyValue(item, ['DESCRIPTION', 'DESC']);
+
+    // 4. Attributes - Capture everything else
+    const attributes = {
+      hsn,
+      gst,
+      guid, // Keep GUID in attributes for reference
+      parent_group: parent,
+      base_unit: baseUnit,
+    };
 
     const product: ProductDoc = {
-      sku: this._cleanTallyString(sku),
-      name: name || undefined,
-      base_unit: baseUnit || undefined,
-      price,
+      sku: sku, // Readable SKU
+      name: name || sku,
+      base_unit: baseUnit,
+      price: price || openingValue, // Use opening value if price is 0
       opening_balance: openingBalance,
       opening_value: openingValue,
       party_id,
-      parent,
+      parent, // Kept for backward compat if needed
+      category: parent, // ✅ Mapped to Category
+      brand: brand,     // ✅ Mapped to Brand
       hsn,
       gst,
+      attributes,       // ✅ Store extra data
+      short_description: description, // if Tally provides it
     };
 
     const inventories: InventoryDoc[] = [
