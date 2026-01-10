@@ -28,9 +28,9 @@ async function bootstrap() {
     transform: true,    // transforms payloads to DTO types
   }));
 
-  // Increase the body size limit (e.g., to 5mb)
-  app.use(bodyParser.json({ limit: '2mb' }));
-  app.use(bodyParser.urlencoded({ limit: '2mb', extended: true }));
+  // Increase the body size limit (e.g., to 50mb)
+  app.use(bodyParser.json({ limit: '50mb' }));
+  app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
   await app.listen(4000); // NestJS backend port
 }

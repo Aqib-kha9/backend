@@ -314,10 +314,14 @@ export class AgentService {
         existingProducts.map((p: any) => [p.sku, p.product_id])
       );
 
+      const productOps: any[] = [];
+      const inventoryOps: any[] = [];
+      const newSkus: string[] = [];
+      
       let processedCount = 0;
       let errorCount = 0;
 
-      // Process stock items
+      // 1. Pre-process items
       for (const tallyItem of stockItems) {
         try {
           const processed = this._processTallyItem(tallyItem, { 
@@ -326,71 +330,99 @@ export class AgentService {
           });
           
           if (!processed) {
-            this.logger.warn('Skipping item: Could not process Tally item');
             errorCount++;
             continue;
           }
 
           const { product, inventories } = processed;
+          let productId = skuToProductIdMap.get(product.sku!);
 
-          let productId = skuToProductIdMap.get(product.sku);
-          
           if (!productId) {
-            // New product - get next product ID
-            productId = await this._peekNextProductId();
-            product.product_id = productId;
-
-            // Try inserting product
-            const inserted = await this.productModel.updateOne(
-              { sku: product.sku },
-              { $setOnInsert: product },
-              { upsert: true },
-            );
-
-            // Increment only if insert happened
-            if (inserted.upsertedCount > 0) {
-              await this._incrementProductId();
-              processedCount++;
-            }
-            
-            skuToProductIdMap.set(product.sku, productId);
+            newSkus.push(product.sku!); // Mark for ID generation
           } else {
-            // Existing product - update
-            product.product_id = productId;
-            await this.productModel.updateOne(
-              { sku: product.sku },
-              { $set: product },
-            );
-            processedCount++;
+             product.product_id = productId;
+              productOps.push({
+               updateOne: {
+                 filter: { sku: product.sku! },
+                 update: { $set: product }
+               }
+             });
           }
-
-          // Process inventory
-          for (const inv of inventories) {
-            const invDoc: InventoryDoc = { 
-              ...inv, 
-              product_id: product.product_id, 
-              party_id: inv.party_id || party_id 
-            };
-            
-            await this.inventoryModel.updateOne(
-              { 
-                product_id: invDoc.product_id, 
-                party_id: invDoc.party_id 
-              },
-              { $set: invDoc },
-              { upsert: true },
-            );
-          }
-
-        } catch (err: any) {
-          this.logger.warn(`Skipping item due to processing error: ${err?.message || err}`);
+          
+          // Temporary inventory storage (needs product_id)
+          (product as any)._inventories = inventories;
+        } catch (err) {
           errorCount++;
         }
       }
 
+      // 2. Handle New Products (Batch ID generation)
+      if (newSkus.length > 0) {
+        // We'll just generate IDs sequentially for now (optimistic)
+        // ideally we reserve a block, but loop is fine for "new" items as they are rarer
+        for (const sku of newSkus) {
+           const productId = await this._peekNextProductId();
+           const item = stockItems.find(i => this._cleanTallyString(i.$?.NAME) === sku || this._cleanTallyString(i.$?.GUID) === sku); 
+           // Re-process to attach ID (simplified for brevity, assume mapped correctly in prev loop)
+           // Actually, we need to find the specific processed object. 
+           // Let's stick to safe sequential for new items to ensure IDs are correct, 
+           // but bulk write the updates.
+           await this._incrementProductId(); 
+           skuToProductIdMap.set(sku, productId);
+        }
+      }
+
+      // Re-loop to build ops with guaranteed IDs
+      // (This is a simplified approach to avoid complex in-memory linking)
+      // Reset ops
+      const finalProductOps: any[] = [];
+      const finalInventoryOps: any[] = [];
+
+      for (const tallyItem of stockItems) {
+         const processed = this._processTallyItem(tallyItem, { party_id, fieldMapping });
+         if(!processed) continue;
+         const { product, inventories } = processed;
+         
+           let productId = skuToProductIdMap.get(product.sku!);
+          if (!productId) {
+            // Should have been generated above, but if not, generate now (slow path)
+            productId = await this._peekNextProductId();
+            await this._incrementProductId();
+            skuToProductIdMap.set(product.sku!, productId);
+          }
+         product.product_id = productId;
+
+         finalProductOps.push({
+           updateOne: {
+             filter: { sku: product.sku! },
+             update: { $set: product },
+             upsert: true
+           }
+         });
+
+         for (const inv of inventories) {
+            finalInventoryOps.push({
+              updateOne: {
+                filter: { product_id: productId, party_id: inv.party_id || party_id },
+                update: { $set: { ...inv, product_id: productId, party_id: inv.party_id || party_id } },
+                upsert: true
+              }
+            });
+         }
+         processedCount++;
+      }
+
+      // 3. Execute Bulk Writes
+      if (finalProductOps.length > 0) {
+        await this.productModel.bulkWrite(finalProductOps);
+      }
+      if (finalInventoryOps.length > 0) {
+        await this.inventoryModel.bulkWrite(finalInventoryOps);
+      }
+
       return { 
         success: true, 
-        message: `Tally data processed successfully. Processed ${processedCount} products, ${errorCount} errors.` 
+        message: `Tally data processed successfully. Processed ${processedCount} products. Errors: ${errorCount}` 
       };
 
     } catch (error: any) {
