@@ -413,6 +413,14 @@ export class AgentService {
     if (!task || task.status !== 'IN_PROGRESS') {
       throw new BadRequestException('Invalid or inactive requestId');
     }
+
+    if (dto.error) {
+      task.status = 'FAILED';
+      task.error = dto.error;
+      await task.save();
+      this.logger.warn(`Agent reported error for task ${dto.requestId}: ${dto.error}`);
+      return { success: true, message: 'Error reported successfully' };
+    }
   
     // Company name case-insensitive match with aggressive normalization
     const expectedRaw = task.payload?.companyName || '';

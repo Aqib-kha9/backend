@@ -1,4 +1,4 @@
-import { IsString, IsObject } from 'class-validator';
+import { IsString, IsObject, IsOptional } from 'class-validator';
 
 export class ReceiveTallyDto {
   @IsString()
@@ -12,5 +12,9 @@ export class ReceiveTallyDto {
 
   @IsString()
   timestamp: string;
+
+  @IsString()
+  @IsOptional()
+  error?: string;
 }
 
