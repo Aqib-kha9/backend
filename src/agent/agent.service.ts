@@ -231,32 +231,6 @@ export class AgentService {
   }
 
 
-  /* ----------------------- Product ID Counter (Safe) ----------------------- */
-  private async _peekNextProductId(): Promise<string> {
-    const counters = this.productModel.db.collection<CounterDoc>('counters');
-    let doc = await counters.findOne({ _id: 'productid' } as any);
-
-    if (!doc?.seq) {
-      // Initialize counter if missing
-      await counters.updateOne(
-        { _id: 'productid' } as any,
-        { $set: { seq: 1000, createdAt: new Date() } },
-        { upsert: true },
-      );
-      doc = await counters.findOne({ _id: 'productid' } as any);
-    }
-
-    return `PRD${doc!.seq}`;
-  }
-
-  private async _incrementProductId(): Promise<void> {
-    const counters = this.productModel.db.collection<CounterDoc>('counters');
-    await counters.updateOne(
-      { _id: 'productid' } as any,
-      { $inc: { seq: 1 } },
-      { upsert: true },
-    );
-  }
 
   /* ----------------------- Main Tally Processing ----------------------- */
   async processTallyData(
@@ -267,34 +241,23 @@ export class AgentService {
     try {
       this.logger.log(`Processing Tally data for user ${userId}, company: ${companyName}`);
 
-      // Get user and field mapping
       const user = await this.userModel.findOne({ userid: userId }).lean().exec();
       if (!user) throw new NotFoundException('User not found.');
 
-      // ✅ FIXED: Get party_id from party collection
       const party = await this.partyModel.findOne({ userid: userId }).lean().exec();
-      if (!party) {
-        throw new BadRequestException(`Party not found for user ${userId}`);
-      }
+      if (!party) throw new BadRequestException(`Party not found for user ${userId}`);
 
-      const party_id = party.party_id; // This will be "PYT101" for user a101
-      this.logger.log(`Found party_id: ${party_id} for user: ${userId}`);
-
+      const party_id = party.party_id;
       const fieldMapping = (user as any).tallyFieldMapping || {};
 
-      // Parse XML data
       const parsedData = await parseStringPromise(xmlData, { 
         explicitArray: false, 
         trim: true 
       });
 
       const collection = parsedData?.ENVELOPE?.BODY?.DATA?.COLLECTION;
-
       if (!collection || !collection.STOCKITEM) {
-        return { 
-          success: true, 
-          message: 'Sync complete: No stock items found in Tally data.' 
-        };
+        return { success: true, message: 'Sync complete: No stock items found.' };
       }
 
       const stockItems: TallyStockItem[] = Array.isArray(collection.STOCKITEM) 
@@ -305,132 +268,90 @@ export class AgentService {
         this._cleanTallyString(si.$?.GUID ?? si.$?.NAME ?? '')
       ).filter(Boolean);
 
-      // Fetch existing products from DB
+      // Fetch existing products
       const existingProducts = await this.productModel.find({ 
-        sku: { $in: allSkus } 
+        sku: { $in: allSkus },
+        party_id // Scope to this party
       }).select('sku product_id').lean();
       
-      const skuToProductIdMap = new Map(
-        existingProducts.map((p: any) => [p.sku, p.product_id])
-      );
+      const skuToProductIdMap = new Map(existingProducts.map((p: any) => [p.sku, p.product_id]));
 
       const productOps: any[] = [];
       const inventoryOps: any[] = [];
+      const itemsToProcess: { product: ProductDoc, inventories: InventoryDoc[] }[] = [];
       const newSkus: string[] = [];
-      
-      let processedCount = 0;
-      let errorCount = 0;
 
-      // 1. Pre-process items
+      // 1. First pass: Process items and identify new ones
       for (const tallyItem of stockItems) {
-        try {
-          const processed = this._processTallyItem(tallyItem, { 
-            party_id, 
-            fieldMapping 
-          });
-          
-          if (!processed) {
-            errorCount++;
-            continue;
-          }
+        const processed = this._processTallyItem(tallyItem, { party_id, fieldMapping });
+        if (!processed) continue;
 
-          const { product, inventories } = processed;
-          let productId = skuToProductIdMap.get(product.sku!);
-
-          if (!productId) {
-            newSkus.push(product.sku!); // Mark for ID generation
-          } else {
-             product.product_id = productId;
-              productOps.push({
-               updateOne: {
-                 filter: { sku: product.sku! },
-                 update: { $set: product }
-               }
-             });
-          }
-          
-          // Temporary inventory storage (needs product_id)
-          (product as any)._inventories = inventories;
-        } catch (err) {
-          errorCount++;
+        if (!skuToProductIdMap.has(processed.product.sku!)) {
+          newSkus.push(processed.product.sku!);
         }
+        itemsToProcess.push(processed);
       }
 
-      // 2. Handle New Products (Batch ID generation)
+      // 2. Bulk ID generation for new items
       if (newSkus.length > 0) {
-        // We'll just generate IDs sequentially for now (optimistic)
-        // ideally we reserve a block, but loop is fine for "new" items as they are rarer
-        for (const sku of newSkus) {
-           const productId = await this._peekNextProductId();
-           const item = stockItems.find(i => this._cleanTallyString(i.$?.NAME) === sku || this._cleanTallyString(i.$?.GUID) === sku); 
-           // Re-process to attach ID (simplified for brevity, assume mapped correctly in prev loop)
-           // Actually, we need to find the specific processed object. 
-           // Let's stick to safe sequential for new items to ensure IDs are correct, 
-           // but bulk write the updates.
-           await this._incrementProductId(); 
-           skuToProductIdMap.set(sku, productId);
+        const counters = this.productModel.db.collection<CounterDoc>('counters');
+        const counterDoc: any = await counters.findOneAndUpdate(
+          { _id: 'productid' } as any,
+          { $inc: { seq: newSkus.length } },
+          { upsert: true, returnDocument: 'before' }
+        );
+        
+        // Handle different MongoDB driver return structures
+        const resultDoc = counterDoc?.value || counterDoc;
+        let startSeq = resultDoc?.seq ?? 1000;
+        
+        if (!resultDoc?.seq) {
+           const fresh = await counters.findOne({ _id: 'productid' } as any);
+           startSeq = (fresh?.seq || 1000) - newSkus.length;
+        }
+
+        for (let i = 0; i < newSkus.length; i++) {
+          skuToProductIdMap.set(newSkus[i], `PRD${startSeq + i}`);
         }
       }
 
-      // Re-loop to build ops with guaranteed IDs
-      // (This is a simplified approach to avoid complex in-memory linking)
-      // Reset ops
-      const finalProductOps: any[] = [];
-      const finalInventoryOps: any[] = [];
+      // 3. Second pass: Build bulk ops
+      for (const item of itemsToProcess) {
+        const productId = skuToProductIdMap.get(item.product.sku!);
+        if (!productId) continue;
 
-      for (const tallyItem of stockItems) {
-         const processed = this._processTallyItem(tallyItem, { party_id, fieldMapping });
-         if(!processed) continue;
-         const { product, inventories } = processed;
-         
-           let productId = skuToProductIdMap.get(product.sku!);
-          if (!productId) {
-            // Should have been generated above, but if not, generate now (slow path)
-            productId = await this._peekNextProductId();
-            await this._incrementProductId();
-            skuToProductIdMap.set(product.sku!, productId);
+        item.product.product_id = productId;
+        productOps.push({
+          updateOne: {
+            filter: { sku: item.product.sku!, party_id },
+            update: { $set: item.product },
+            upsert: true
           }
-         product.product_id = productId;
+        });
 
-         finalProductOps.push({
-           updateOne: {
-             filter: { sku: product.sku! },
-             update: { $set: product },
-             upsert: true
-           }
-         });
-
-         for (const inv of inventories) {
-            finalInventoryOps.push({
-              updateOne: {
-                filter: { product_id: productId, party_id: inv.party_id || party_id },
-                update: { $set: { ...inv, product_id: productId, party_id: inv.party_id || party_id } },
-                upsert: true
-              }
-            });
-         }
-         processedCount++;
+        for (const inv of item.inventories) {
+          inventoryOps.push({
+            updateOne: {
+              filter: { product_id: productId, party_id: inv.party_id || party_id },
+              update: { $set: { ...inv, product_id: productId, party_id: inv.party_id || party_id } },
+              upsert: true
+            }
+          });
+        }
       }
 
-      // 3. Execute Bulk Writes
-      if (finalProductOps.length > 0) {
-        await this.productModel.bulkWrite(finalProductOps);
-      }
-      if (finalInventoryOps.length > 0) {
-        await this.inventoryModel.bulkWrite(finalInventoryOps);
-      }
+      // 4. Execute Bulk Writes
+      if (productOps.length > 0) await this.productModel.bulkWrite(productOps);
+      if (inventoryOps.length > 0) await this.inventoryModel.bulkWrite(inventoryOps);
 
       return { 
         success: true, 
-        message: `Tally data processed successfully. Processed ${processedCount} products. Errors: ${errorCount}` 
+        message: `Sync successful. Processed ${itemsToProcess.length} items. New: ${newSkus.length}` 
       };
 
     } catch (error: any) {
-      this.logger.error(`Tally data processing failed: ${error.message}`);
-      return {
-        success: false,
-        message: `Tally data processing failed: ${error.message}`
-      };
+      this.logger.error(`Sync failed: ${error.message}`);
+      return { success: false, message: `Sync failed: ${error.message}` };
     }
   }
 
