@@ -3,7 +3,7 @@ import { Document } from 'mongoose';
 
 export type ProductDocument = Product & Document;
 
-@Schema()
+@Schema({ strict: false })
 export class Product {
   @Prop({ required: true })
   product_id: string; // e.g. PRD001-BLK-128
