@@ -20,7 +20,7 @@ import { Task } from './schemas/task.schema';
 import { TallyData } from './schemas/tallydata.schema';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import { signPayload } from '../security/hmac.util';
+import { signPayload, verifyHmacSignature } from '../security/hmac.util';
 import { parseStringPromise } from 'xml2js';
 import { Party } from '../user/schemas/party.schema';
 
@@ -90,44 +90,53 @@ export class AgentService {
 
   /* ----------------------- Helper Methods (same as AdminService) ----------------------- */
 
-  private _cleanTallyString = (value: any): string =>
-    String(value ?? '')
-      .replace(/\u0004/g, '')
-      .trim();
+  private _cleanTallyString = (value: any): string => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'object') {
+      // Tally XML parsed values often wrap the text in '_' or have sub-tags like 'NAME'
+      const inner = value._ ?? value.NAME ?? value.AMOUNT ?? value.NUMBER ?? '';
+      return String(inner).replace(/\u0004/g, '').trim();
+    }
+    return String(value).replace(/\u0004/g, '').trim();
+  };
 
   private _extractTallyValue(
     item: any,
     possibleKeys: string[],
   ): string | undefined {
+    if (!item || typeof item !== 'object') return undefined;
+
+    const itemKeys = Object.keys(item);
     for (const k of possibleKeys) {
       if (!k) continue;
 
-      if (k.startsWith('$')) {
-        const attr = k.slice(1);
-        const val = item.$?.[attr];
-        if (val !== undefined) return this._cleanTallyString(val);
+      // 1. Direct match (Case-Insensitive)
+      const exactKey = itemKeys.find(key => key.toUpperCase() === k.toUpperCase());
+      if (exactKey !== undefined && item[exactKey] !== undefined) {
+         const val = this._cleanTallyString(item[exactKey]);
+         if (val) return val;
       }
 
-      if (item[k] !== undefined) {
-        const v =
-          typeof item[k] === 'object' && item[k]._ !== undefined
-            ? item[k]._
-            : item[k];
-        if (v !== undefined) return this._cleanTallyString(v);
+      // 2. Attribute match ($: { KEY: ... })
+      if (item.$) {
+        const attrKeys = Object.keys(item.$);
+        const attrKey = attrKeys.find(key => key.toUpperCase() === k.toUpperCase());
+        if (attrKey !== undefined) {
+           const val = this._cleanTallyString(item.$[attrKey]);
+           if (val) return val;
+        }
       }
 
-      const nested = Object.keys(item).find((x) =>
-        x.toUpperCase().includes(k.toUpperCase()),
-      );
-      if (nested && item[nested]) {
-        const nestedNode = item[nested];
-        if (nestedNode['NAME.LIST']?.NAME)
-          return this._cleanTallyString(nestedNode['NAME.LIST'].NAME);
-        if (nestedNode.NAME) return this._cleanTallyString(nestedNode.NAME);
+      // 3. Deep List match (e.g. MAILINGNAME.LIST, GSTDETAILS.LIST)
+      const listKey = itemKeys.find(key => key.toUpperCase().includes(k.toUpperCase()) && key.toUpperCase().includes('.LIST'));
+      if (listKey) {
+          const list = Array.isArray(item[listKey]) ? item[listKey] : [item[listKey]];
+          for (const entry of list) {
+              // Recurse with common internal keys for lists
+              const val = this._extractTallyValue(entry, [k, 'NAME', 'HSNCODE', 'GSTRATE', 'TAXABILITY']);
+              if (val) return val;
+          }
       }
-
-      const udfVal = item[`UDF:${k}`] ?? item[`UDF${k}`];
-      if (udfVal) return this._cleanTallyString(udfVal);
     }
     return undefined;
   }
@@ -136,87 +145,105 @@ export class AgentService {
     tallyItem: TallyStockItem,
     context: { party_id: string; fieldMapping: Record<string, string> },
   ) {
-    const { party_id } = context;
+    const { party_id, fieldMapping } = context;
     const item = tallyItem;
 
-    // 1. GUID & Name
-    const guid = this._extractTallyValue(item, ['GUID', '$GUID', 'GUID._']);
-    const nameRaw = this._extractTallyValue(item, [
-      'NAME',
-      '$NAME',
-      'LANGUAGENAME.LIST',
-    ]);
+    // 1. GUID & Name & SKU
+    const guid = this._extractTallyValue(item, ['GUID', 'REMOTEID']);
+    const name = this._extractTallyValue(item, ['NAME', 'MAILINGNAME']);
+    const partNo = this._extractTallyValue(item, ['PARTNO', 'MAILINGNAME', 'ALIAS']);
     
-    // Normalize Name
-    const name = nameRaw ? this._cleanTallyString(nameRaw) : undefined;
-    
-    // 2. SKU Generation: Prefer Name -> GUID
-    // The user specifically wants readable SKUs ("Iphone" -> "Iphone", not "852f...")
-    let sku = name; 
-    if (!sku && guid) sku = guid; // Fallback if name is somehow missing
-    if (!sku) return null; // fail-safe
+    // Priority: PartNo -> Name -> GUID (Readable SKUs)
+    const sku = partNo || name || guid;
 
-    const baseUnit = this._extractTallyValue(item, [
-      'BASEUNITS',
-      'BASEUNITS._',
+    if (!sku) return null;
+
+    // 2. Core Stats
+    const baseUnit = this._extractTallyValue(item, ['BASEUNITS', 'UOM', 'UNIT']);
+    const openingBalanceRaw = this._extractTallyValue(item, [
+      'CLOSINGBALANCE',
+      'OPENINGBALANCE',
+      'ACTUALQTY',
+      'STOCKITEMOFF.LIST.OPENINGBALANCE'
     ]);
-    const openingBalanceRaw = this._extractTallyValue(item, ['OPENINGBALANCE']);
     const openingBalance = openingBalanceRaw
-      ? parseFloat((openingBalanceRaw.match(/[\d.]+/) || ['0'])[0])
+      ? parseFloat((openingBalanceRaw.match(/[-?\d.]+/) || ['0'])[0])
       : 0;
 
     const openingValueRaw = this._extractTallyValue(item, [
+      'CLOSINGVALUE',
       'OPENINGVALUE',
-      'OPENINGRATE',
       'STANDARDCOST',
     ]);
-    const openingValue = openingValueRaw
-      ? parseFloat(openingValueRaw.replace(/[^0-9.-]+/g, ''))
-      : 0;
+    const openingValue = Math.abs(parseFloat(String(openingValueRaw || '0').replace(/[^0-9.-]+/g, '')) || 0);
 
     const priceRaw = this._extractTallyValue(item, [
+      'RATE',
+      'PRICE',
+      'STANDARDPRICE',
       'STANDARDCOST',
-      'OPENINGVALUE', // Fallback to opening value if std cost missing
+      'OPENINGRATE',
+      'CLOSINGRATE'
     ]);
-    const price = priceRaw ? parseFloat(priceRaw.replace(/[^0-9.-]+/g, '')) : 0;
+    const price = Math.abs(parseFloat(String(priceRaw || '0').replace(/[^0-9.-]+/g, '')) || 0);
 
-    // 3. Category & Brand from PARENT
-    const parentRaw = this._extractTallyValue(item, ['PARENT', 'PARENT._']);
+    // 3. Hierarchy
+    const parentRaw = this._extractTallyValue(item, ['PARENT', 'CATEGORY']);
     const parent = parentRaw ? this._cleanTallyString(parentRaw) : 'Uncategorized';
-    
-    // Tally doesn't have "Brand", so we use Parent (Stock Group) as Brand too, 
-    // or "Generic" if it's top-level.
     const brand = parent !== 'Uncategorized' ? parent : 'Generic';
 
-    const hsn = this._extractTallyValue(item, ['HSN']);
-    const gst = this._extractTallyValue(item, ['GSTAPPLICABLE']);
-    const description = this._extractTallyValue(item, ['DESCRIPTION', 'DESC']);
+    const hsn = this._extractTallyValue(item, ['HSNCODE', 'HSN', 'TEMPGSTHSNCODE', 'GSTHSNCODE', 'HSNDETAILS.LIST.HSNCODE', 'GSTDETAILS.LIST.HSNCODE']);
+    const gst = this._extractTallyValue(item, ['GSTAPPLICABLE', 'GSTEXEMPTIONTYPE', 'TAXABILITY', 'GSTDETAILS.LIST.TAXABILITY']);
+    const description = this._extractTallyValue(item, ['DESCRIPTION', 'MAILINGNAME', 'DESC', 'LANGUAGENAME.LIST']);
 
-    // 4. Attributes - Capture everything else
-    const attributes = {
-      hsn,
-      gst,
-      guid, // Keep GUID in attributes for reference
-      parent_group: parent,
-      base_unit: baseUnit,
+    const attributes: Record<string, any> = {
+      hsn, gst, guid, parent_group: parent, base_unit: baseUnit
     };
 
+    // 4. Dynamic Attribute Catch-all
+    for (const key of Object.keys(item)) {
+       if (key === '$' || key.length < 2) continue;
+       const val = this._extractTallyValue(item, [key]);
+       if (val && typeof val === 'string' && val.length > 0 && val.length < 500) {
+         attributes[key] = val;
+       }
+    }
+
     const product: ProductDoc = {
-      sku: sku, // Readable SKU
+      sku: sku,
       name: name || sku,
       base_unit: baseUnit,
-      price: price || openingValue, // Use opening value if price is 0
+      price: price || (openingBalance !== 0 ? Math.round(openingValue / Math.abs(openingBalance)) : 0),
       opening_balance: openingBalance,
       opening_value: openingValue,
       party_id,
-      parent, // Kept for backward compat if needed
-      category: parent, // ✅ Mapped to Category
-      brand: brand,     // ✅ Mapped to Brand
+      parent,
+      category: parent,
+      brand: brand,
       hsn,
       gst,
-      attributes,       // ✅ Store extra data
-      short_description: description, // if Tally provides it
+      attributes,
+      short_description: description,
     };
+
+    // 5. User-defined Field Mapping
+    if (fieldMapping && Object.keys(fieldMapping).length > 0) {
+      for (const [tallyKey, appKey] of Object.entries(fieldMapping)) {
+        const extractedValue = this._extractTallyValue(item, [tallyKey]);
+        if (extractedValue !== undefined && extractedValue !== '') {
+           const coreProductFields = ['name', 'sku', 'brand', 'category', 'subcategory', 'short_description', 'long_description', 'specification', 'price', 'base_unit', 'hsn', 'gst'];
+           if (coreProductFields.includes(appKey)) {
+              if (appKey === 'price') {
+                 product[appKey] = Math.abs(parseFloat(extractedValue.replace(/[^0-9.-]+/g, '')) || 0);
+              } else {
+                 product[appKey] = extractedValue;
+              }
+           } else {
+              attributes[appKey] = extractedValue;
+           }
+        }
+      }
+    }
 
     const inventories: InventoryDoc[] = [
       {
@@ -255,14 +282,29 @@ export class AgentService {
         trim: true 
       });
 
+      let stockItems: TallyStockItem[] = [];
+
+      // Support Collection Export format (Old)
       const collection = parsedData?.ENVELOPE?.BODY?.DATA?.COLLECTION;
-      if (!collection || !collection.STOCKITEM) {
-        return { success: true, message: 'Sync complete: No stock items found.' };
+      if (collection?.STOCKITEM) {
+         stockItems = Array.isArray(collection.STOCKITEM) ? collection.STOCKITEM : [collection.STOCKITEM];
+      }
+      
+      // Support Master Export format (New, robust)
+      const requestData = parsedData?.ENVELOPE?.BODY?.IMPORTDATA?.REQUESTDATA;
+      if (requestData?.TALLYMESSAGE) {
+         const msgs = Array.isArray(requestData.TALLYMESSAGE) ? requestData.TALLYMESSAGE : [requestData.TALLYMESSAGE];
+         for (const msg of msgs) {
+            if (msg.STOCKITEM) {
+               if (Array.isArray(msg.STOCKITEM)) stockItems.push(...msg.STOCKITEM);
+               else stockItems.push(msg.STOCKITEM);
+            }
+         }
       }
 
-      const stockItems: TallyStockItem[] = Array.isArray(collection.STOCKITEM) 
-        ? collection.STOCKITEM 
-        : [collection.STOCKITEM];
+      if (stockItems.length === 0) {
+        return { success: true, message: 'Sync complete: No stock items found.' };
+      }
 
       const allSkus = stockItems.map((si) => 
         this._cleanTallyString(si.$?.GUID ?? si.$?.NAME ?? '')
@@ -324,7 +366,7 @@ export class AgentService {
         productOps.push({
           updateOne: {
             filter: { sku: item.product.sku!, party_id },
-            update: { $set: item.product },
+            update: { $set: { ...item.product, tally_account: {} } }, // Force reset to stop mongoose document cyclic reference bugs
             upsert: true
           }
         });
@@ -356,9 +398,16 @@ export class AgentService {
   }
 
 
-  /* ----------------------- Updated receiveTally Method ----------------------- */
-  /* ----------------------- Updated receiveTally Method ----------------------- */
-  async receiveTally(tokenHash: string, dto: ReceiveTallyDto) {
+  /* ----------------------- Updated receiveTally Method with Signature ----------------------- */
+  async receiveTally(tokenHash: string, dto: ReceiveTallyDto, signature: string) {
+    const secret = process.env.AGENT_HMAC_SECRET || 'default-secret';
+    
+    // Verify signature from Agent
+    if (!signature || !verifyHmacSignature(dto, signature, secret)) {
+      this.logger.error(`Signature verification failed for ReceiveTally, request ${dto.requestId}`);
+      throw new UnauthorizedException('Invalid payload signature');
+    }
+
     const agent = await this.agentModel.findOne({ tokenHash }).lean();
     if (!agent) throw new UnauthorizedException('Invalid token');
   
@@ -558,6 +607,9 @@ export class AgentService {
     }).save();
 
     const secret = process.env.AGENT_HMAC_SECRET || 'default-secret';
+    if (secret === 'default-secret') {
+      this.logger.warn('WARNING: Running with default AGENT_HMAC_SECRET. Security is compromised.');
+    }
     const command = { requestId, action, payload };
     const signature = signPayload(command, secret);
 

@@ -50,11 +50,14 @@ export class AuthService {
     if (!userEntry) {
       throw new UnauthorizedException('Email not pre-approved for registration');
     }
-    // 4. Hash password
-    
     if(data.password !== data.confirmpassword){
       throw new BadRequestException('Passwords do not match');
     }
+    
+    if (userEntry.status === 'active') {
+      throw new BadRequestException('Account is already registered. Please sign in.');
+    }
+
     const hashedPassword = await bcrypt.hash(data.password, 10);
     const userid = userEntry.userid;
     const subscription = userEntry.subscription;
@@ -67,39 +70,43 @@ export class AuthService {
       groupid = 3;
       
     }
-    const lastParty = await this.partymodel
-    .findOne({ party_id: { $regex: /^PYT\d+$/ } })
-    .sort({ party_id: -1 })
-    .exec();
+    const existingParty = await this.partymodel.findOne({ userid: userid });
+    if (!existingParty) {
+      const lastParty = await this.partymodel
+      .findOne({ party_id: { $regex: /^PYT\d+$/ } })
+      .sort({ party_id: -1 })
+      .exec();
 
-    let newPartyId = 'PYT100'; // default if none exists
+      let newPartyId = 'PYT100'; // default if none exists
 
-    if (lastParty) {
-      const lastId = lastParty.party_id;           // e.g., "PYT109"
-      const lastNum = parseInt(lastId.replace('PYT', ''), 10); // 109
-      const newNum = lastNum + 1;
-      newPartyId = `PYT${newNum}`;
+      if (lastParty) {
+        const lastId = lastParty.party_id;           // e.g., "PYT109"
+        const lastNum = parseInt(lastId.replace('PYT', ''), 10); // 109
+        const newNum = lastNum + 1;
+        newPartyId = `PYT${newNum}`;
+      }
+
+      const newparty = new this.partymodel({
+        party_id: newPartyId,
+        userid: userid,
+        party_type: 'supplier',
+        store_name: data.store,
+        created_at: new Date()
+      });
+
+      await newparty.save();
     }
 
-    const newparty = new this.partymodel({
-      party_id: newPartyId,
-      userid: userid,
-      party_type: 'supplier',
-      store_name: data.store,
-      created_at: new Date()
-    });
-
-    await newparty.save();
-
-
-    
-    const newusersg = new this.userSecurityGroupModel({
-      userid: userEntry.userid,
-      groupid: groupid,
-      from_date: new Date(),
-      thru_date: new Date(Date.now() + subscription * 24 * 60 * 60 * 1000),
-    });
-    await newusersg.save();
+    const existingSG = await this.userSecurityGroupModel.findOne({ userid: userid });
+    if (!existingSG) {
+      const newusersg = new this.userSecurityGroupModel({
+        userid: userEntry.userid,
+        groupid: groupid,
+        from_date: new Date(),
+        thru_date: new Date(Date.now() + subscription * 24 * 60 * 60 * 1000),
+      });
+      await newusersg.save();
+    }
     // 5. Save user
     userEntry.password = hashedPassword;
     userEntry.name = data.name;

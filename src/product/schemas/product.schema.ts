@@ -62,7 +62,7 @@ export class Product {
   @Prop({ default: Date.now })
   created_at?: Date;
 
-  @Prop({ type: Object, default: {} })
+  @Prop({ type: Object, default: () => ({}) })
   tally_account?: {
     company_name: string;
     company_number: number;

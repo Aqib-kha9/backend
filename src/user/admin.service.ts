@@ -131,10 +131,14 @@ export class AdminService {
     return field?.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
   }
 
-  private _cleanTallyString = (value: any): string =>
-    String(value ?? '')
-      .replace(/\u0004/g, '')
-      .trim();
+  private _cleanTallyString = (value: any): string => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'object') {
+      const inner = value._ ?? value.NAME ?? value.AMOUNT ?? value.NUMBER ?? '';
+      return String(inner).replace(/\u0004/g, '').trim();
+    }
+    return String(value).replace(/\u0004/g, '').trim();
+  };
 
   private _buildCompanyRequestXML(): string {
     return `
@@ -190,6 +194,8 @@ export class AdminService {
                 STANDARDCOST,
                 HSN,
                 GSTAPPLICABLE,
+                DESCRIPTION,
+                PARTNO,
                 USERDEFINEDFIELDLIST
               </FETCH>
             </COLLECTION>
@@ -201,101 +207,154 @@ export class AdminService {
   `;
   }
 
+  /* ----------------------- Helper Methods (same as AgentService) ----------------------- */
+
+
+
   private _extractTallyValue(
     item: any,
     possibleKeys: string[],
   ): string | undefined {
+    if (!item || typeof item !== 'object') return undefined;
+
+    const itemKeys = Object.keys(item);
     for (const k of possibleKeys) {
       if (!k) continue;
 
-      if (k.startsWith('$')) {
-        const attr = k.slice(1);
-        const val = item.$?.[attr];
-        if (val !== undefined) return this._cleanTallyString(val);
+      // 1. Direct match (Case-Insensitive)
+      const exactKey = itemKeys.find(key => key.toUpperCase() === k.toUpperCase());
+      if (exactKey !== undefined && item[exactKey] !== undefined) {
+         const val = this._cleanTallyString(item[exactKey]);
+         if (val) return val;
       }
 
-      if (item[k] !== undefined) {
-        const v =
-          typeof item[k] === 'object' && item[k]._ !== undefined
-            ? item[k]._
-            : item[k];
-        if (v !== undefined) return this._cleanTallyString(v);
+      // 2. Attribute match ($: { KEY: ... })
+      if (item.$) {
+        const attrKeys = Object.keys(item.$);
+        const attrKey = attrKeys.find(key => key.toUpperCase() === k.toUpperCase());
+        if (attrKey !== undefined) {
+           const val = this._cleanTallyString(item.$[attrKey]);
+           if (val) return val;
+        }
       }
 
-      const nested = Object.keys(item).find((x) =>
-        x.toUpperCase().includes(k.toUpperCase()),
-      );
-      if (nested && item[nested]) {
-        const nestedNode = item[nested];
-        if (nestedNode['NAME.LIST']?.NAME)
-          return this._cleanTallyString(nestedNode['NAME.LIST'].NAME);
-        if (nestedNode.NAME) return this._cleanTallyString(nestedNode.NAME);
+      // 3. Deep List match (e.g. MAILINGNAME.LIST, GSTDETAILS.LIST)
+      const listKey = itemKeys.find(key => key.toUpperCase().includes(k.toUpperCase()) && key.toUpperCase().includes('.LIST'));
+      if (listKey) {
+          const list = Array.isArray(item[listKey]) ? item[listKey] : [item[listKey]];
+          for (const entry of list) {
+              const val = this._extractTallyValue(entry, [k, 'NAME', 'HSNCODE', 'GSTRATE', 'TAXABILITY']);
+              if (val) return val;
+          }
       }
-
-      const udfVal = item[`UDF:${k}`] ?? item[`UDF${k}`];
-      if (udfVal) return this._cleanTallyString(udfVal);
     }
     return undefined;
   }
 
-    /* ----------------------- Mapper ----------------------- */
+  /* ----------------------- Mapper ----------------------- */
   private _processTallyItem(
     tallyItem: TallyStockItem,
     context: { party_id: string; fieldMapping: Record<string, string> },
   ) {
-    const { party_id } = context;
+    const { party_id, fieldMapping } = context;
     const item = tallyItem;
 
-    const guid = this._extractTallyValue(item, ['GUID', '$GUID', 'GUID._']);
-    const name = this._extractTallyValue(item, [
-      'NAME',
-      '$NAME',
-      'LANGUAGENAME.LIST',
-    ]);
-    const sku = guid || name;
+    // 1. GUID & Name & SKU
+    const guid = this._extractTallyValue(item, ['GUID', 'REMOTEID']);
+    const name = this._extractTallyValue(item, ['NAME', 'MAILINGNAME']);
+    const partNo = this._extractTallyValue(item, ['PARTNO', 'MAILINGNAME', 'ALIAS']);
+    
+    // Priority: PartNo -> Name -> GUID (Readable SKUs)
+    const sku = partNo || name || guid;
 
-    if (!sku) return null; // fail-safe for missing SKU
+    if (!sku) return null;
 
-    const baseUnit = this._extractTallyValue(item, [
-      'BASEUNITS',
-      'BASEUNITS._',
+    // 2. Core Stats
+    const baseUnit = this._extractTallyValue(item, ['BASEUNITS', 'UOM', 'UNIT']);
+    const openingBalanceRaw = this._extractTallyValue(item, [
+      'CLOSINGBALANCE',
+      'OPENINGBALANCE',
+      'ACTUALQTY',
+      'STOCKITEMOFF.LIST.OPENINGBALANCE'
     ]);
-    const openingBalanceRaw = this._extractTallyValue(item, ['OPENINGBALANCE']);
     const openingBalance = openingBalanceRaw
-      ? parseFloat((openingBalanceRaw.match(/[\d.]+/) || ['0'])[0])
+      ? parseFloat((openingBalanceRaw.match(/[-?\d.]+/) || ['0'])[0])
       : 0;
 
     const openingValueRaw = this._extractTallyValue(item, [
+      'CLOSINGVALUE',
       'OPENINGVALUE',
-      'OPENINGRATE',
       'STANDARDCOST',
     ]);
-    const openingValue = openingValueRaw
-      ? parseFloat(openingValueRaw.replace(/[^0-9.-]+/g, ''))
-      : 0;
+    const openingValue = Math.abs(parseFloat(String(openingValueRaw || '0').replace(/[^0-9.-]+/g, '')) || 0);
 
     const priceRaw = this._extractTallyValue(item, [
+      'RATE',
+      'PRICE',
+      'STANDARDPRICE',
       'STANDARDCOST',
-      'OPENINGVALUE',
+      'OPENINGRATE',
+      'CLOSINGRATE'
     ]);
-    const price = priceRaw ? parseFloat(priceRaw.replace(/[^0-9.-]+/g, '')) : 0;
+    const price = Math.abs(parseFloat(String(priceRaw || '0').replace(/[^0-9.-]+/g, '')) || 0);
 
-    const parent = this._extractTallyValue(item, ['PARENT', 'PARENT._']);
-    const hsn = this._extractTallyValue(item, ['HSN']);
-    const gst = this._extractTallyValue(item, ['GSTAPPLICABLE']);
+    // 3. Hierarchy
+    const parentRaw = this._extractTallyValue(item, ['PARENT', 'CATEGORY']);
+    const parent = parentRaw ? this._cleanTallyString(parentRaw) : 'Uncategorized';
+    const brand = parent !== 'Uncategorized' ? parent : 'Generic';
+
+    const hsn = this._extractTallyValue(item, ['HSNCODE', 'HSN', 'TEMPGSTHSNCODE', 'GSTHSNCODE', 'HSNDETAILS.LIST.HSNCODE', 'GSTDETAILS.LIST.HSNCODE']);
+    const gst = this._extractTallyValue(item, ['GSTAPPLICABLE', 'GSTEXEMPTIONTYPE', 'TAXABILITY', 'GSTDETAILS.LIST.TAXABILITY']);
+    const description = this._extractTallyValue(item, ['DESCRIPTION', 'MAILINGNAME', 'DESC', 'LANGUAGENAME.LIST']);
+
+    const attributes: Record<string, any> = {
+      hsn, gst, guid, parent_group: parent, base_unit: baseUnit
+    };
+
+    // 4. Dynamic Attribute Catch-all
+    for (const key of Object.keys(item)) {
+       if (key === '$' || key.length < 2) continue;
+       const val = this._extractTallyValue(item, [key]);
+       if (val && typeof val === 'string' && val.length > 0 && val.length < 500) {
+         attributes[key] = val;
+       }
+    }
 
     const product: ProductDoc = {
-      sku: this._cleanTallyString(sku),
-      name: name || undefined,
-      base_unit: baseUnit || undefined,
-      price,
+      sku: sku,
+      name: name || sku,
+      base_unit: baseUnit,
+      price: price || (openingBalance !== 0 ? Math.round(openingValue / Math.abs(openingBalance)) : 0),
       opening_balance: openingBalance,
       opening_value: openingValue,
       party_id,
       parent,
+      category: parent,
+      brand: brand,
       hsn,
       gst,
+      attributes,
+      short_description: description,
     };
+
+    // 5. User-defined Field Mapping
+    if (fieldMapping && Object.keys(fieldMapping).length > 0) {
+      for (const [tallyKey, appKey] of Object.entries(fieldMapping)) {
+        const extractedValue = this._extractTallyValue(item, [tallyKey]);
+        if (extractedValue !== undefined && extractedValue !== '') {
+           const coreProductFields = ['name', 'sku', 'brand', 'category', 'subcategory', 'short_description', 'long_description', 'specification', 'price', 'base_unit', 'hsn', 'gst'];
+           if (coreProductFields.includes(appKey)) {
+              if (appKey === 'price') {
+                 product[appKey] = Math.abs(parseFloat(extractedValue.replace(/[^0-9.-]+/g, '')) || 0);
+              } else {
+                 product[appKey] = extractedValue;
+              }
+           } else {
+              attributes[appKey] = extractedValue;
+           }
+        }
+      }
+    }
 
     const inventories: InventoryDoc[] = [
       {
@@ -308,7 +367,8 @@ export class AdminService {
 
     return { product, inventories };
   }
-/* ----------------------- Product ID Counter (Safe) ----------------------- */
+
+  /* ----------------------- Product ID Counter (Safe) ----------------------- */
 private async _peekNextProductId(): Promise<string> {
   const counters = this.productModel.db.collection<CounterDoc>('counters');
   let doc = await counters.findOne({ _id: 'productid' } as any);
@@ -355,9 +415,18 @@ async syncTallyProducts(
     const companyRequestXML = this._buildCompanyRequestXML();
     const companyResponse = await axios.post(tallyUrl, companyRequestXML, { timeout: 15000 });
     const companyResult = await parseStringPromise(companyResponse.data, { explicitArray: false, trim: true });
-    const companyFromTally = this._cleanTallyString(
-      companyResult?.ENVELOPE?.BODY?.DATA?.COLLECTION?.COMPANY?.$?.NAME
-    );
+    
+    // Support Collection format (Old) or direct Export format (New)
+    let companyFromTally = '';
+    const collectionData = companyResult?.ENVELOPE?.BODY?.DATA?.COLLECTION?.COMPANY;
+    if (collectionData) {
+        companyFromTally = this._cleanTallyString(collectionData.$?.NAME || collectionData.NAME);
+    }
+
+    if (!companyFromTally) {
+        // Try other paths common in Tally XML
+        companyFromTally = this._cleanTallyString(companyResult?.ENVELOPE?.BODY?.IMPORTDATA?.REQUESTDATA?.TALLYMESSAGE?.COMPANY?.$?.NAME);
+    }
 
     if (!companyFromTally) throw new BadRequestException('Could not identify active company from Tally.');
     if (companyFromTally.toLowerCase() !== this._cleanTallyString(expectedCompanyName).toLowerCase())
@@ -365,7 +434,8 @@ async syncTallyProducts(
 
     this.logger.log(`Company validation successful. Found "${companyFromTally}".`);
   } catch (err) {
-    if (isAxiosError(err)) throw new BadRequestException(`Could not connect to Tally on port ${port} to verify company.`);
+    if (err instanceof BadRequestException) throw err;
+    if (axios.isAxiosError(err)) throw new BadRequestException(`Could not connect to Tally on port ${port} to verify company.`);
     throw err;
   }
 
@@ -374,20 +444,36 @@ async syncTallyProducts(
   const stockItemRequestXML = this._buildStockItemRequestXML();
   const stockItemResponse = await axios.post(tallyUrl, stockItemRequestXML, { timeout: 60000 });
   const stockItemResult = await parseStringPromise(stockItemResponse.data, { explicitArray: false, trim: true });
+  
+  // Robust Collection extraction
+  let stockItemsToProcess: TallyStockItem[] = [];
   const collection = stockItemResult?.ENVELOPE?.BODY?.DATA?.COLLECTION;
+  if (collection?.STOCKITEM) {
+      stockItemsToProcess = Array.isArray(collection.STOCKITEM) ? collection.STOCKITEM : [collection.STOCKITEM];
+  }
 
-  if (!collection || !collection.STOCKITEM)
+  if (stockItemsToProcess.length === 0) {
+     // Try REQUESTDATA path if using Export Data instead of Collection
+     const requestData = stockItemResult?.ENVELOPE?.BODY?.IMPORTDATA?.REQUESTDATA;
+     if (requestData?.TALLYMESSAGE) {
+        const msgs = Array.isArray(requestData.TALLYMESSAGE) ? requestData.TALLYMESSAGE : [requestData.TALLYMESSAGE];
+        for (const msg of msgs) {
+           if (msg.STOCKITEM) stockItemsToProcess.push(msg.STOCKITEM);
+        }
+     }
+  }
+
+  if (stockItemsToProcess.length === 0)
     return { success: true, message: 'Sync complete: Company validated, but no stock items found.' };
 
-  const stockItems: TallyStockItem[] = Array.isArray(collection.STOCKITEM) ? collection.STOCKITEM : [collection.STOCKITEM];
-  const allSkus = stockItems.map((si) => this._cleanTallyString(si.$?.GUID ?? si.$?.NAME ?? '')).filter(Boolean);
+  const allSkus = stockItemsToProcess.map((si) => this._cleanTallyString(si.$?.GUID ?? si.$?.NAME ?? '')).filter(Boolean);
 
   //Fetch existing products from DB
-  const existingProducts = await this.productModel.find({ sku: { $in: allSkus } }).select('sku product_id').lean();
+  const existingProducts = await this.productModel.find({ sku: { $in: allSkus }, party_id }).select('sku product_id').lean();
   const skuToProductIdMap = new Map(existingProducts.map((p: any) => [p.sku, p.product_id]));
 
   // Process stock items
-  for (const tallyItem of stockItems) {
+  for (const tallyItem of stockItemsToProcess) {
     try {
       const processed = this._processTallyItem(tallyItem, { party_id, fieldMapping: finalMapping });
       if (!processed) continue;
@@ -396,27 +482,28 @@ async syncTallyProducts(
 
       let productId = skuToProductIdMap.get(product.sku);
       if (!productId) {
-        // Peek current counter
         productId = await this._peekNextProductId();
         product.product_id = productId;
 
-        // Try inserting product
         const inserted = await this.productModel.updateOne(
-          { sku: product.sku },
+          { sku: product.sku, party_id },
           { $setOnInsert: product },
           { upsert: true },
         );
 
-        // Increment only if insert happened
         if (inserted.upsertedCount > 0) await this._incrementProductId();
         skuToProductIdMap.set(product.sku, productId);
       } else {
         product.product_id = productId;
+        // Update price/stock for existing
+        await this.productModel.updateOne(
+          { sku: product.sku, party_id },
+          { $set: { ...product, tally_account: {} } }
+        );
       }
 
-      // Prepare inventory ops
       for (const inv of inventories) {
-        const invDoc: InventoryDoc = { ...inv, product_id: product.product_id, party_id: inv.party_id || party_id };
+        const invDoc: InventoryDoc = { ...inv, product_id: product.product_id, party_id };
         await this.inventoryModel.updateOne(
           { product_id: invDoc.product_id, party_id: invDoc.party_id },
           { $set: invDoc },
@@ -428,11 +515,9 @@ async syncTallyProducts(
     }
   }
 
-  return { success: true, message: `Sync completed successfully. Processed ${skuToProductIdMap.size} products.` };
+  return { success: true, message: `Sync completed successfully. Processed ${stockItemsToProcess.length} items.` };
 }
 
-
-  /* ----------------------- your existing methods unchanged ----------------------- */
   async createPreApprovedRetailer(data: {
     email: string;
     id: string;
@@ -524,22 +609,17 @@ async syncTallyProducts(
     adminId: string,
     handleDaysType?: 'increase' | 'decrease',
   ): Promise<{ message: string; newSubscription: number }> {
-    // console.log(userid, days, action, adminId, handleDaysType);
-    // Validate superadmin
     const Admin = await this.userModel.findById(adminId);
     if (!Admin || !Admin.userid.startsWith('a')) {
       throw new UnauthorizedException('Only Admins can update subscription');
     }
-    // Find the admin to update
     const admin = await this.userModel.findOne({ userid });
     if (!admin) {
       throw new NotFoundException('Admin not found');
     }
-    // Optional: prevent superadmins from modifying themselves
     if (userid === adminId) {
       throw new BadRequestException('You cannot modify your own subscription');
     }
-    // Update subscription logic
     if (action === 'StartNew') {
       admin.subscription = days;
       admin.subscription_update = new Date();
@@ -549,7 +629,6 @@ async syncTallyProducts(
       } else if (handleDaysType === 'decrease') {
         admin.subscription = Math.max(0, (admin.subscription || 0) - days);
       }
-      // Do not update subscription_update date for HandleDays
     }
     await admin.save();
     return {

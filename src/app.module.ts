@@ -13,6 +13,7 @@ import { AgentModule } from './agent/agent.module';
 import { BannerModule } from './banner/banner.module';
 import { CloudinaryModule } from './cloudinary/cloudinary.module';
 import {WallpaperModule} from './wallpaper/wallpaper.module'
+import { ThrottlerModule } from '@nestjs/throttler';
 @Module({
   imports: [
     MongooseModule.forRoot(
@@ -28,6 +29,10 @@ import {WallpaperModule} from './wallpaper/wallpaper.module'
     CloudinaryModule,
     WallpaperModule,
     ScheduleModule.forRoot(),
+    ThrottlerModule.forRoot([{
+      ttl: 60000,
+      limit: 10,
+    }]),
   ],
   controllers: [InvoiceController],
   providers: [AppService, SubscriptionTasksService],

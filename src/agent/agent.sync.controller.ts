@@ -7,22 +7,31 @@ import {
   Headers, 
   BadRequestException,
   UsePipes,
-  ValidationPipe
+  ValidationPipe,
+  UseGuards,
+  Req
 } from '@nestjs/common';
 import { AgentService } from './agent.service';
 import { RegisterAgentDto } from './dto/register-agent.dto';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { ReceiveTallyDto } from './dto/receive-tally.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { ThrottlerGuard } from '@nestjs/throttler';
 
 @Controller('agent/sync')
+@UseGuards(ThrottlerGuard)
 @UsePipes(new ValidationPipe())
 export class AgentSyncController {
   constructor(private readonly agentService: AgentService) {}
 
-  /** Register new Agent */
+  /** Register new Agent (Protected) */
+  @UseGuards(JwtAuthGuard)
   @Post('register')
-  async register(@Body() body: RegisterAgentDto) {
-    const { backendUrl, authToken, tallyPort, name, userid } = body;
+  async register(@Body() body: RegisterAgentDto, @Req() req: any) {
+    const { backendUrl, authToken, tallyPort, name } = body;
+    
+    // Ensure the agent is registered for the logged-in user
+    const userid = req.user.userid || req.user.id;
     
     return this.agentService.registerAgent({
       backendUrl,
@@ -62,9 +71,9 @@ export class AgentSyncController {
 
   /** 🔄 Agent polls backend for pending tasks */
   @Get('poll-tasks')
-  async poll(@Query('tokenHash') tokenHash: string) {
+  async poll(@Headers('x-agent-token-hash') tokenHash: string) {
     if (!tokenHash) {
-      throw new BadRequestException('tokenHash required');
+      throw new BadRequestException('x-agent-token-hash header required');
     }
     return this.agentService.pollTasks(tokenHash);
   }
@@ -72,22 +81,23 @@ export class AgentSyncController {
   /** 📤 Agent sends processed Tally data back to backend */
   @Post('receive-tally')
   async receive(
-    @Query('tokenHash') tokenHash: string,
-    @Body() body: ReceiveTallyDto,
+    @Headers('x-agent-token-hash') tokenHash: string,
+    @Headers('x-agent-signature') signature: string,
+    @Body() body: any,
   ) {
     if (!tokenHash) {
-      throw new BadRequestException('tokenHash required');
+      throw new BadRequestException('x-agent-token-hash header required');
     }
-    return this.agentService.receiveTally(tokenHash, body);
+    return this.agentService.receiveTally(tokenHash, body, signature);
   }
 
   /** ✅ Additional endpoints for better UX */
   
   /** Get agent info by tokenHash */
   @Get('info')
-  async getAgentInfo(@Query('tokenHash') tokenHash: string) {
+  async getAgentInfo(@Headers('x-agent-token-hash') tokenHash: string) {
     if (!tokenHash) {
-      throw new BadRequestException('tokenHash required');
+      throw new BadRequestException('x-agent-token-hash header required');
     }
     
     // ✅ CHANGE: Service method use karo directly agentModel access ke bajaye
