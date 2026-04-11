@@ -17,7 +17,9 @@ async function bootstrap() {
       'https://superfrontend-ruddy.vercel.app',
       'https://superfrontend-six.vercel.app',
       'https://admin-retialer.vercel.app',
-            ],  
+      'https://dhanasriakhiltilesadmin.vercel.app',
+      'https://superfrontend-blond.vercel.app',
+    ],  
     // Next.js port
   });
 
