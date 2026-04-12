@@ -277,10 +277,12 @@ export class AgentService {
       const party_id = party.party_id;
       const fieldMapping = (user as any).tallyFieldMapping || {};
 
+      this.logger.log(`Starting XML parsing for ${xmlData.length} bytes...`);
       const parsedData = await parseStringPromise(xmlData, { 
         explicitArray: false, 
         trim: true 
       });
+      this.logger.log(`XML parsing complete.`);
 
       let stockItems: TallyStockItem[] = [];
 
@@ -320,6 +322,7 @@ export class AgentService {
 
       const productOps: any[] = [];
       const inventoryOps: any[] = [];
+      this.logger.log(`Processing ${stockItems.length} stock items...`);
       const itemsToProcess: { product: ProductDoc, inventories: InventoryDoc[] }[] = [];
       const newSkus: string[] = [];
 
@@ -336,6 +339,7 @@ export class AgentService {
 
       // 2. Bulk ID generation for new items
       if (newSkus.length > 0) {
+        this.logger.log(`Generating Product IDs for ${newSkus.length} new items...`);
         const counters = this.productModel.db.collection<CounterDoc>('counters');
         const counterDoc: any = await counters.findOneAndUpdate(
           { _id: 'productid' } as any,
@@ -383,8 +387,11 @@ export class AgentService {
       }
 
       // 4. Execute Bulk Writes
+      this.logger.log(`Executing Bulk Write: ${productOps.length} products, ${inventoryOps.length} inventories...`);
       if (productOps.length > 0) await this.productModel.bulkWrite(productOps);
       if (inventoryOps.length > 0) await this.inventoryModel.bulkWrite(inventoryOps);
+
+      this.logger.log(`Batch process complete.`);
 
       return { 
         success: true, 

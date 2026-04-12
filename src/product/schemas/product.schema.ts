@@ -55,7 +55,7 @@ export class Product {
   @Prop({ type: Buffer })
   image_blob?: Buffer; // optional direct image data
 
-  @Prop({ required: true })
+  @Prop({ required: true, index: true })
   party_id: string; // Link product to party who owns/registered it
 
 
