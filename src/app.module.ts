@@ -12,13 +12,21 @@ import { SubscriptionTasksService } from './subscriptiontasks/subscription-tasks
 import { AgentModule } from './agent/agent.module'; 
 import { BannerModule } from './banner/banner.module';
 import { CloudinaryModule } from './cloudinary/cloudinary.module';
-import {WallpaperModule} from './wallpaper/wallpaper.module'
+import { WallpaperModule } from './wallpaper/wallpaper.module';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 @Module({
   imports: [
-    MongooseModule.forRoot(
-      'mongodb+srv://aqibkha9x:DkyucQ2Ccjs4EwHD@cluster0.skvdstf.mongodb.net/inventory'
-    ),
+    ConfigModule.forRoot({
+      isGlobal: true,
+    }),
+    MongooseModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: async (configService: ConfigService) => ({
+        uri: configService.get<string>('MONGODB_URI'),
+      }),
+      inject: [ConfigService],
+    }),
     MongooseModule.forFeature([{ name: 'Customer', schema: (Customer as any).schema }]),
     UserModule,
     ProductModule,

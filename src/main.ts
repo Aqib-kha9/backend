@@ -24,7 +24,7 @@ async function bootstrap() {
   });
 
   // Serve uploads folder publicly
-  app.useStaticAssets(join(__dirname, '..', 'uploads'), { prefix: '/uploads/' });
+  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
 
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,    // strips unknown fields
