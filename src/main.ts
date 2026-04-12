@@ -32,9 +32,18 @@ async function bootstrap() {
     transform: true,    // transforms payloads to DTO types
   }));
 
-  // Increase the body size limit (e.g., to 50mb)
-  app.use(bodyParser.json({ limit: '50mb' }));
-  app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
+  // Increase the body size limit (e.g., to 100mb for large Tally syncs)
+  app.use(bodyParser.json({ limit: '100mb' }));
+  app.use(bodyParser.urlencoded({ limit: '100mb', extended: true }));
+
+  // Fallback error handler for body parsing errors
+  app.use((err, req, res, next) => {
+    if (err && err.status === 413) {
+      console.error('Payload Too Large Error:', err.message);
+      return res.status(413).json({ message: 'Payload Too Large' });
+    }
+    next();
+  });
 
   await app.listen(4000); // NestJS backend port
 }
