@@ -465,13 +465,23 @@ export class AgentService {
     }
   
     // Optional: Also save raw data for backup
-    await new this.tallyDataModel({
-      requestId: dto.requestId,
-      companyName: dto.companyName,
-      data: dto.data,
-      timestamp: dto.timestamp,
-      agentId: agent.agentId,
-    }).save();
+    try {
+      const backupData = { ...dto.data };
+      if (backupData && typeof backupData.xml === 'string' && backupData.xml.length > 10 * 1024 * 1024) {
+        const originalLength = backupData.xml.length;
+        backupData.xml = `[XML Omitted: Size too large (${(originalLength / (1024 * 1024)).toFixed(2)} MB)]`;
+      }
+
+      await new this.tallyDataModel({
+        requestId: dto.requestId,
+        companyName: dto.companyName,
+        data: backupData,
+        timestamp: dto.timestamp,
+        agentId: agent.agentId,
+      }).save();
+    } catch (backupError: any) {
+      this.logger.error(`Failed to save TallyData backup: ${backupError.message}`);
+    }
   
     // ✅ CHANGE: Task document mein result field ko properly handle karo
     await this.agentTaskModel.updateOne(
