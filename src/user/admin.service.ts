@@ -191,6 +191,8 @@ export class AdminService {
                 BASEUNITS,
                 OPENINGBALANCE,
                 OPENINGVALUE,
+                CLOSINGBALANCE,
+                CLOSINGVALUE,
                 STANDARDCOST,
                 HSN,
                 GSTAPPLICABLE,
